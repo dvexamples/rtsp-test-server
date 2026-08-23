@@ -12,7 +12,8 @@ class DynamicMediaFactory(GstRtspServer.RTSPMediaFactory):
         self.set_shared(True)
 
     def do_create_element(self, url):
-        path = url.get_abspath()
+        # Correctly access the absolute path property from the RTSPUrl object
+        path = url.abspath if hasattr(url, 'abspath') else str(url)
         print(f"Incoming stream request for path: {path}")
 
         codec = "h264"
@@ -63,7 +64,6 @@ class GstServer(GstRtspServer.RTSPServer):
         self.set_service(str(port))
         
         factory = DynamicMediaFactory()
-        # Bind to root mount point to catch all incoming subpaths safely
         self.get_mount_points().add_factory("/", factory)
         self.attach(None)
 
