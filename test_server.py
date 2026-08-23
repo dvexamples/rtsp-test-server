@@ -1,84 +1,95 @@
 import argparse
 import sys
+import re
 import gi
 gi.require_version('Gst', '1.0')
 gi.require_version('GstRtspServer', '1.0')
 from gi.repository import Gst, GstRtspServer, GObject
 
-class TestMediaFactory(GstRtspServer.RTSPMediaFactory):
-    def __init__(self, codec, width, height, pattern):
+class DynamicMediaFactory(GstRtspServer.RTSPMediaFactory):
+    def __init__(self):
         super().__init__()
-        self.codec = codec
-        self.width = width
-        self.height = height
-        self.pattern = pattern
+        # Ensure the pipeline is shared if multiple clients connect to the exact same URL,
+        # and crucially, ensures resources are released when the last client disconnects.
+        self.set_shared(True)
 
     def do_create_element(self, url):
-        # Automatically set optimal properties [властивості] for specific patterns
-        pattern_props = f"pattern={self.pattern}"
-        if self.pattern == "zone-plate":
+        # Extract the URI path (e.g., /h264/720p/ball)
+        path = url.get_abspath()
+        print(f"Incoming stream request for path: {path}")
+
+        # Default fallback parameters
+        codec = "h264"
+        width, height = 1280, 720
+        pattern = "smpte"
+
+        # Parse path using regex: /<codec>/<resolution>/<pattern>
+        # Example match: /h264/1024p/zone-plate
+        match = re.match(r"^/([a-zA-Z0-9]+)/([a-zA-Z0-9]+)/([a-zA-Z0-9\-_]+)$", path)
+        if match:
+            c_arg, r_arg, p_arg = match.groups()
+            
+            if c_arg in ["h264", "h265", "mjpeg"]:
+                codec = c_arg
+            
+            if r_arg == "720p":
+                width, height = 1280, 720
+            elif r_arg == "1024p":
+                width, height = 1280, 1024
+            
+            valid_patterns = ['smpte', 'zone-plate', 'ball', 'snow', 'checkers1', 'blink']
+            if p_arg in valid_patterns:
+                pattern = p_arg
+
+        # Configure pattern-specific properties
+        pattern_props = f"pattern={pattern}"
+        if pattern == "zone-plate":
             pattern_props += " kx2=40 ky2=40 kt=2"
-        elif self.pattern == "ball":
+        elif pattern == "ball":
             pattern_props += " motion=sweep animation-mode=wall-time"
 
-        # The base video source [відеоджерело] and text overlay [накладання тексту]
-        src = f"videotestsrc {pattern_props} is-live=true ! video/x-raw,width={self.width},height={self.height},framerate=30/1"
-        overlay = f"! timeoverlay valignment=bottom halignment=left text='{self.codec.upper()} {self.width}x{self.height} - {self.pattern}' font-desc='Sans, 24'"
+        # Build video source and overlay
+        src = f"videotestsrc {pattern_props} is-live=true ! video/x-raw,width={width},height={height},framerate=30/1"
+        overlay = f"! timeoverlay valignment=bottom halignment=left text='{codec.upper()} {width}x{height} - {pattern}' font-desc='Sans, 24'"
         
-        # Build the pipeline [конвеєр GStreamer] based on the selected codec [кодек]
-        if self.codec == "mjpeg":
+        # Build encoding pipeline based on parsed codec
+        if codec == "mjpeg":
             pipeline_str = f"( {src} {overlay} ! videoconvert ! jpegenc ! rtpjpegpay name=pay0 pt=26 )"
-        elif self.codec == "h264":
+        elif codec == "h264":
             pipeline_str = f"( {src} {overlay} ! videoconvert ! x264enc tune=zerolatency bitrate=2000 speed-preset=ultrafast ! rtph264pay name=pay0 pt=96 )"
-        elif self.codec == "h265":
+        elif codec == "h265":
             pipeline_str = f"( {src} {overlay} ! videoconvert ! x265enc tune=zerolatency bitrate=2000 ! rtph265pay name=pay0 pt=96 )"
         else:
-            raise ValueError("Unsupported codec")
+            raise ValueError(f"Unsupported codec: {codec}")
 
+        print(f"Spawning pipeline -> Codec: {codec}, Resolution: {width}x{height}, Pattern: {pattern}")
         return Gst.parse_launch(pipeline_str)
 
 class GstServer(GstRtspServer.RTSPServer):
-    def __init__(self, codec, width, height, pattern, port):
+    def __init__(self, port):
         super().__init__()
-        # Set dynamic port [динамічний порт]
         self.set_service(str(port))
-        factory = TestMediaFactory(codec, width, height, pattern)
-        factory.set_shared(True)
-        self.get_mount_points().add_factory("/live", factory)
+        
+        # Use a wildcard mount point so ANY subpath (e.g. /h264/720p/ball) hits our dynamic factory
+        factory = DynamicMediaFactory()
+        self.get_mount_points().add_factory("/*", factory)
         self.attach(None)
 
 if __name__ == '__main__':
-    # Define command-line arguments [аргументи командного рядка]
-    parser = argparse.ArgumentParser(description="GStreamer RTSP Test Server for QGroundControl")
-    parser.add_argument('--pattern', type=str, default='smpte', 
-                        choices=['smpte', 'zone-plate', 'ball', 'snow', 'checkers1', 'blink'],
-                        help="The test pattern [тестовий шаблон] to generate")
-    parser.add_argument('--res', type=str, default='720p', 
-                        choices=['720p', '1024p'],
-                        help="Resolution [роздільна здатність] of the video stream")
-    parser.add_argument('--codec', type=str, default='h264', 
-                        choices=['h264', 'h265', 'mjpeg'],
-                        help="Video encoding codec [кодек]")
-    parser.add_argument('--port', type=int, default=8554,
-                        help="Network port [мережевий порт] to serve RTSP on")
-
+    parser = argparse.ArgumentParser(description="Dynamic Multi-Stream GStreamer RTSP Server")
+    parser.add_argument('--port', type=int, default=8554, help="Network port to serve RTSP on")
     args = parser.parse_args()
 
-    # Map standard labels to exact width and height
-    if args.res == '720p':
-        width, height = 1280, 720
-    elif args.res == '1024p':
-        width, height = 1280, 1024  
-
     Gst.init(None)
-    server = GstServer(args.codec, width, height, args.pattern, args.port)
+    server = GstServer(args.port)
     
-    print("=======================================")
-    print(f"RTSP Server active on port: {args.port}")
-    print(f"URL: rtsp://<your-ip>:{args.port}/live")
-    print(f"Settings: {args.codec.upper()} | {width}x{height} | Pattern: {args.pattern}")
-    print("Press Ctrl+C to stop.")
-    print("=======================================")
+    print("==================================================")
+    print(f"Dynamic RTSP Server active on port: {args.port}")
+    print("Clients can define streams via URL path structure:")
+    print("Format: rtsp://<server-ip>:<port>/<codec>/<resolution>/<pattern>")
+    print("Example: rtsp://<server-ip>:%d/h264/720p/ball" % args.port)
+    print("Example: rtsp://<server-ip>:%d/mjpeg/1024p/zone-plate" % args.port)
+    print("==================================================")
     
     loop = GObject.MainLoop()
     try:
