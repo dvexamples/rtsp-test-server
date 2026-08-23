@@ -12,7 +12,6 @@ class DynamicMediaFactory(GstRtspServer.RTSPMediaFactory):
         self.set_shared(True)
 
     def do_create_element(self, url):
-        # Correctly access the absolute path property from the RTSPUrl object
         path = url.abspath if hasattr(url, 'abspath') else str(url)
         print(f"Incoming stream request for path: {path}")
 
@@ -20,7 +19,6 @@ class DynamicMediaFactory(GstRtspServer.RTSPMediaFactory):
         width, height = 1280, 720
         pattern = "smpte"
 
-        # Regex to capture /<codec>/<resolution>/<pattern>
         match = re.match(r"^/([a-zA-Z0-9]+)/([a-zA-Z0-9]+)/([a-zA-Z0-9\-_]+)$", path)
         if match:
             c_arg, r_arg, p_arg = match.groups()
@@ -64,7 +62,10 @@ class GstServer(GstRtspServer.RTSPServer):
         self.set_service(str(port))
         
         factory = DynamicMediaFactory()
-        self.get_mount_points().add_factory("/", factory)
+        # Use wildcard mount mapping to properly capture nested subpaths
+        mounts = self.get_mount_points()
+        mounts.add_factory("/live", factory)
+        mounts.add_factory("/*", factory)
         self.attach(None)
 
 if __name__ == '__main__':
