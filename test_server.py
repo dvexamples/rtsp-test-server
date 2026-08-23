@@ -1,6 +1,6 @@
 import argparse
 import sys
-import re
+import urllib.parse
 import gi
 gi.require_version('Gst', '1.0')
 gi.require_version('GstRtspServer', '1.0')
@@ -12,28 +12,30 @@ class DynamicMediaFactory(GstRtspServer.RTSPMediaFactory):
         self.set_shared(True)
 
     def do_create_element(self, url):
-        path = url.abspath if hasattr(url, 'abspath') else str(url)
-        print(f"Incoming stream request for path: {path}")
+        # Extract query parameters from the URL safely
+        query_string = url.query if hasattr(url, 'query') else None
+        params = {}
+        if query_string:
+            params = dict(urllib.parse.parse_qsl(query_string))
 
-        codec = "h264"
-        width, height = 1280, 720
-        pattern = "smpte"
+        print(f"Incoming stream request with params: {params}")
 
-        match = re.match(r"^/([a-zA-Z0-9]+)/([a-zA-Z0-9]+)/([a-zA-Z0-9\-_]+)$", path)
-        if match:
-            c_arg, r_arg, p_arg = match.groups()
-            
-            if c_arg in ["h264", "h265", "mjpeg"]:
-                codec = c_arg
-            
-            if r_arg == "720p":
-                width, height = 1280, 720
-            elif r_arg == "1024p":
-                width, height = 1280, 1024
-            
-            valid_patterns = ['smpte', 'zone-plate', 'ball', 'snow', 'checkers1', 'blink']
-            if p_arg in valid_patterns:
-                pattern = p_arg
+        codec = params.get('codec', 'h264')
+        res = params.get('res', '720p')
+        pattern = params.get('pattern', 'smpte')
+
+        # Validate parameters
+        if codec not in ["h264", "h265", "mjpeg"]:
+            codec = "h264"
+        
+        if res == "1024p":
+            width, height = 1280, 1024
+        else:
+            width, height = 1280, 720
+
+        valid_patterns = ['smpte', 'zone-plate', 'ball', 'snow', 'checkers1', 'blink']
+        if pattern not in valid_patterns:
+            pattern = "smpte"
 
         pattern_props = f"pattern={pattern}"
         if pattern == "zone-plate":
@@ -62,14 +64,11 @@ class GstServer(GstRtspServer.RTSPServer):
         self.set_service(str(port))
         
         factory = DynamicMediaFactory()
-        # Use wildcard mount mapping to properly capture nested subpaths
-        mounts = self.get_mount_points()
-        mounts.add_factory("/live", factory)
-        mounts.add_factory("/*", factory)
+        self.get_mount_points().add_factory("/live", factory)
         self.attach(None)
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Dynamic Multi-Stream GStreamer RTSP Server")
+    parser = argparse.ArgumentParser(description="Query-based Dynamic GStreamer RTSP Server")
     parser.add_argument('--port', type=int, default=8554, help="Network port to serve RTSP on")
     args = parser.parse_args()
 
@@ -78,7 +77,8 @@ if __name__ == '__main__':
     
     print("==================================================")
     print(f"Dynamic RTSP Server active on port: {args.port}")
-    print("Format: rtsp://<server-ip>:<port>/<codec>/<resolution>/<pattern>")
+    print("Format: rtsp://<server-ip>:<port>/live?codec=<c>&res=<r>&pattern=<p>")
+    print("Example: rtsp://<server-ip>:%d/live?codec=h264&res=720p&pattern=blink" % args.port)
     print("==================================================")
     
     loop = GObject.MainLoop()
