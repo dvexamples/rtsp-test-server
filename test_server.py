@@ -21,11 +21,11 @@ class TestMediaFactory(GstRtspServer.RTSPMediaFactory):
         elif self.pattern == "ball":
             pattern_props += " motion=sweep animation-mode=wall-time"
 
-        # The base video source and text overlay
+        # The base video source [відеоджерело] and text overlay [накладання тексту]
         src = f"videotestsrc {pattern_props} is-live=true ! video/x-raw,width={self.width},height={self.height},framerate=30/1"
         overlay = f"! timeoverlay valignment=bottom halignment=left text='{self.codec.upper()} {self.width}x{self.height} - {self.pattern}' font-desc='Sans, 24'"
         
-        # Build the correct pipeline [конвеєр] based on the selected codec [кодек]
+        # Build the pipeline [конвеєр] based on the selected codec [кодек]
         if self.codec == "mjpeg":
             pipeline_str = f"( {src} {overlay} ! videoconvert ! jpegenc ! rtpjpegpay name=pay0 pt=26 )"
         elif self.codec == "h264":
@@ -38,9 +38,10 @@ class TestMediaFactory(GstRtspServer.RTSPMediaFactory):
         return Gst.parse_launch(pipeline_str)
 
 class GstServer(GstRtspServer.RTSPServer):
-    def __init__(self, codec, width, height, pattern):
+    def __init__(self, codec, width, height, pattern, port):
         super().__init__()
-        self.set_service("8554")
+        # Set dynamic port [динамічний порт]
+        self.set_service(str(port))
         factory = TestMediaFactory(codec, width, height, pattern)
         factory.set_shared(True)
         self.get_mount_points().add_factory("/live", factory)
@@ -58,6 +59,8 @@ if __name__ == '__main__':
     parser.add_argument('--codec', type=str, default='h264', 
                         choices=['h264', 'h265', 'mjpeg'],
                         help="Video encoding codec [кодек]")
+    parser.add_argument('--port', type=int, default=8554,
+                        help="Network port [мережевий порт] to serve RTSP on")
 
     args = parser.parse_args()
 
@@ -68,10 +71,11 @@ if __name__ == '__main__':
         width, height = 1280, 1024  
 
     Gst.init(None)
-    server = GstServer(args.codec, width, height, args.pattern)
+    server = GstServer(args.codec, width, height, args.pattern, args.port)
     
     print("=======================================")
-    print(f"RTSP Server active at: rtsp://<your-laptop-ip>:8554/live")
+    print(f"RTSP Server active on port: {args.port}")
+    print(f"URL: rtsp://<your-ip>:{args.port}/live")
     print(f"Settings: {args.codec.upper()} | {width}x{height} | Pattern: {args.pattern}")
     print("Press Ctrl+C to stop.")
     print("=======================================")
